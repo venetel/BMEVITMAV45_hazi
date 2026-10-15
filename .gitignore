@@ -1,0 +1,19 @@
+# Raw PEDIS data: contains patient names, TAJ numbers, addresses and face photos.
+PEDIS*/
+*.MDB
+*.mdb
+
+# Generated tables; pedis_ekorlap_notes.csv holds free-text medical notes.
+data/
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Course rules (not ours to redistribute)
+Nagy*.txt
+
+# Internal team notes (Hungarian planning doc)
+PEDIS_projekt_allapot_es_feladatok.docx
+
+.venv/
