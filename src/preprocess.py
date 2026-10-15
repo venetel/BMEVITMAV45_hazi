@@ -13,10 +13,13 @@ Pipeline for every raw BMP image:
    background.
 3. Split the image into the two feet at the darkest column between them.
 4. Locate each foot (thresholded, smoothed mask; largest blob plus aligned
-   blobs such as toes and a detached heel), and compute quality metrics.
-5. Crop a fixed-aspect window (full image height) centred on the foot, mirror
+   blobs such as toes and a detached heel). The principal axis of the mask
+   gives the foot's tilt; size and shape metrics are measured along that axis.
+5. Rotate the image about the foot centroid so the long axis is vertical,
+   crop a fixed-aspect window (full image height) centred on the foot, mirror
    the foot on the left of the image so all crops have the same orientation,
-   resize to CROP_SIZE and save as 8-bit PNG.
+   resize to CROP_SIZE and save as 8-bit PNG. The foot is not rescaled: its
+   length carries information (shoe size).
 6. Write a manifest with quality flags and a patient-level train/val/test split.
 
 Usage:
@@ -48,12 +51,14 @@ SIDE_MARGIN = 0.06               # fraction of the width ignored at both sides (
 FOOT_QUANTILE = 0.75             # brightest 25% of a half image is treated as foot candidate
 
 # Quality thresholds (see notebooks/01_data_exploration.ipynb for the distributions).
-MIN_FOOT_HEIGHT = 0.45           # foot blob height / image height
-FOOT_ASPECT_RANGE = (1.3, 4.5)   # foot blob height / width
-MIN_FILL = 0.25                  # blob pixels / bounding-box area
+MIN_FOOT_HEIGHT = 0.45           # foot length (along its axis) / image height
+FOOT_ASPECT_RANGE = (1.3, 4.5)   # foot length / width, measured along the foot axis
+MIN_FILL = 0.25                  # blob pixels / (length x width) of the foot
 MAX_BORDER_BRIGHTNESS = 0.55     # mean of the top/bottom rows; high = overexposed platform
 MIN_CONTRAST = 0.08              # std of the inverted image
 MAX_ROUGHNESS = 0.20             # mean |image - blur| / contrast; banded noise is far above
+MAX_TILT = 30.0                  # degrees; the long axis of a real foot on the podoscope is rarely tilted more
+MIN_ELONGATION = 1.6             # sqrt(eigenvalue ratio) of the foot mask; below it the axis is not trusted
 
 
 def decode(path):
@@ -75,15 +80,40 @@ def decode(path):
     return (1.0 - intensity).astype(np.float32)
 
 
+def foot_axis(mask):
+    """Centroid, tilt and size of a foot mask along its principal (long) axis.
+
+    Returns (x_centre, y_centre, tilt_deg, length, width, elongation). tilt_deg is
+    the angle of the long axis from the vertical; positive = the heel lies to the
+    right of the toes (image coordinates, y down). elongation = sqrt of the
+    eigenvalue ratio; a roundish mask (elongation near 1) has no reliable axis.
+    """
+    ys, xs = np.nonzero(mask)
+    xc, yc = xs.mean(), ys.mean()
+    coords = np.stack([xs - xc, ys - yc])
+    eigenvalues, eigenvectors = np.linalg.eigh(np.cov(coords))
+    vx, vy = eigenvectors[:, np.argmax(eigenvalues)]
+    if vy < 0:
+        vx, vy = -vx, -vy
+    tilt = float(np.degrees(np.arctan2(vx, vy)))
+    along = vx * coords[0] + vy * coords[1]
+    across = vy * coords[0] - vx * coords[1]
+    length = float(along.max() - along.min() + 1)
+    width = float(across.max() - across.min() + 1)
+    elongation = float(np.sqrt(eigenvalues.max() / max(eigenvalues.min(), 1e-9)))
+    return float(xc), float(yc), tilt, length, width, elongation
+
+
 def locate_foot(half):
-    """Return (x_centre, metrics) of the foot in one half of the (smoothed) image."""
+    """Return (x_centre, y_centre, tilt_deg, metrics) of the foot in one half of the (smoothed) image."""
     h, w = half.shape
     mask = half > np.quantile(half, FOOT_QUANTILE)
     mask = ndi.binary_opening(mask, structure=np.ones((3, 7)))  # removes thin vertical streaks
     mask = ndi.binary_opening(mask, iterations=1)
     labels, n = ndi.label(mask)
     if n == 0:
-        return w / 2, {"foot_height": 0.0, "foot_aspect": 0.0, "foot_fill": 0.0}
+        return w / 2, h / 2, 0.0, {"foot_height": 0.0, "foot_aspect": 0.0, "foot_fill": 0.0,
+                                   "tilt_deg": 0.0, "axis_reliable": 0}
     areas = ndi.sum(mask, labels, range(1, n + 1))
     objects = ndi.find_objects(labels)
     main = int(np.argmax(areas))
@@ -99,20 +129,39 @@ def locate_foot(half):
         if x0 - 8 <= cx <= x1 + 8:
             y0, y1, x0, x1 = min(y0, ys.start), max(y1, ys.stop), min(x0, xs.start), max(x1, xs.stop)
             keep |= labels == i + 1
-    box_h, box_w = y1 - y0, x1 - x0
-    x_centre = float(np.average(np.nonzero(keep)[1]))
-    return x_centre, {"foot_height": box_h / h, "foot_aspect": box_h / max(box_w, 1),
-                      "foot_fill": float(keep.sum()) / max(box_h * box_w, 1)}
+    x_centre, y_centre, tilt, length, width, elongation = foot_axis(keep)
+    if elongation >= MIN_ELONGATION:
+        # Size metrics along the foot's own axis, so a tilted foot is not penalised.
+        metrics = {"foot_height": length / h, "foot_aspect": length / width,
+                   "foot_fill": float(keep.sum()) / (length * width)}
+    else:
+        # Roundish mask (often bright background, not the sole): no usable axis, so no
+        # rotation, and the size metrics fall back to the upright bounding box.
+        tilt = 0.0
+        box_h, box_w = y1 - y0, x1 - x0
+        metrics = {"foot_height": box_h / h, "foot_aspect": box_h / max(box_w, 1),
+                   "foot_fill": float(keep.sum()) / max(box_h * box_w, 1)}
+    metrics.update(tilt_deg=tilt, axis_reliable=int(elongation >= MIN_ELONGATION))
+    return x_centre, y_centre, tilt, metrics
 
 
-def crop_foot(image, x_centre):
-    """Fixed-aspect window of full image height centred on x_centre, resized to CROP_SIZE."""
+def crop_foot(image, x_centre, y_centre, tilt):
+    """Straighten the foot, then cut a fixed-aspect window of full image height centred on it.
+
+    The image is rotated about the foot centroid so that the long axis becomes
+    vertical (exposed corners are filled with 0 = background), then a window of
+    full image height centred on x_centre is resized to CROP_SIZE.
+    """
     h, w = image.shape
+    if tilt:
+        # PIL rotates counter-clockwise for a positive angle; a positive tilt needs a clockwise turn.
+        image = np.asarray(Image.fromarray(image, mode="F").rotate(
+            -tilt, resample=Image.BILINEAR, center=(x_centre, y_centre), fillcolor=0.0))
     win_w = int(round(h / CROP_ASPECT))
     x0 = int(round(x_centre - win_w / 2))
     padded = np.pad(image, ((0, 0), (win_w, win_w)))  # zero padding = background after inversion
     window = padded[:, x0 + win_w:x0 + 2 * win_w]
-    resized = Image.fromarray((window * 255).astype(np.uint8)).resize(CROP_SIZE, Image.BILINEAR)
+    resized = Image.fromarray((np.clip(window, 0, 1) * 255).astype(np.uint8)).resize(CROP_SIZE, Image.BILINEAR)
     return np.asarray(resized)
 
 
@@ -141,8 +190,10 @@ def process_image(image_file, raw_dir, out_dir):
     stem = os.path.splitext(image_file)[0]
     rows = []
     for side, (x_start, x_stop) in [("image_left", (margin, split)), ("image_right", (split, w - margin))]:
-        x_centre, metrics = locate_foot(smooth[:, x_start:x_stop])
-        crop = crop_foot(image, x_start + x_centre)
+        x_centre, y_centre, tilt, metrics = locate_foot(smooth[:, x_start:x_stop])
+        # A tilt beyond MAX_TILT is almost always a failed mask: crop it unrotated and let QC reject it.
+        rotation = tilt if abs(tilt) <= MAX_TILT else 0.0
+        crop = crop_foot(image, x_start + x_centre, y_centre, rotation)
         mirrored = side == "image_left"
         if mirrored:
             crop = crop[:, ::-1]
@@ -150,7 +201,8 @@ def process_image(image_file, raw_dir, out_dir):
         Image.fromarray(np.ascontiguousarray(crop)).save(os.path.join(out_dir, foot_file))
         foot_ok = (metrics["foot_height"] >= MIN_FOOT_HEIGHT
                    and FOOT_ASPECT_RANGE[0] <= metrics["foot_aspect"] <= FOOT_ASPECT_RANGE[1]
-                   and metrics["foot_fill"] >= MIN_FILL)
+                   and metrics["foot_fill"] >= MIN_FILL
+                   and abs(tilt) <= MAX_TILT)
         rows.append({"image_file": image_file, "foot_file": foot_file, "side": side, "mirrored": int(mirrored),
                      "width": w, "height": h, "border_brightness": round(border_brightness, 4),
                      "contrast": round(contrast, 4), "roughness": round(roughness, 4), **{k: round(v, 4) for k, v in metrics.items()},
