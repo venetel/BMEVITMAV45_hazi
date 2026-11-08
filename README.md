@@ -32,7 +32,7 @@ national health insurance numbers, addresses, photos of people), so it is **not 
 We publish a **de-identified release** instead: the preprocessed foot crops, the train / validation /
 test split files and the targets, with pseudonymous patient ids and exam years only
 (`pedis_feet_release_v1.zip`, built by `src/export_dataset.py`). `src/download_data.py` downloads and
-unpacks it; the download link is shared with the course staff.
+unpacks it (the link is built into the script).
 
 ## Repository files
 
@@ -50,15 +50,15 @@ unpacks it; the download link is shared with the course staff.
 
 ## How to run
 
-**On Google Colab:** open `notebooks/01_data_exploration.ipynb` with the *Open in Colab* button above,
-paste the dataset link into `DATA_URL` in the first code cell, and run all cells. The sections that
+**On Google Colab:** open `notebooks/01_data_exploration.ipynb` with the *Open in Colab* button above
+and run all cells; the first code cell clones the repository and downloads the dataset (~1 GB). The sections that
 need the raw files are skipped; their outputs are stored in the notebook.
 
 **Locally, with the de-identified release:**
 
 ```bash
 pip install -r requirements.txt
-python src/download_data.py --url "<share link>"
+python src/download_data.py
 jupyter notebook notebooks/01_data_exploration.ipynb
 ```
 
