@@ -1,22 +1,68 @@
-# Foot condition recognition from podoscope footprints
+# Foot arch type recognition from podoscope footprints
 
-Homework project for *Deep Learning in Practice with Python and LUA* (BME VITMAV45).
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/venetel/BMEVITMAV45_hazi/blob/main/notebooks/01_data_exploration.ipynb)
 
-The goal is to train a neural network that recognises foot conditions from plantar
-footprint images recorded with the PEDIS podoscope system (~44k images, 1997–2011).
+Homework project for *Deep Learning in Practice with Python and LUA* (BME VITMAV45, autumn 2026).
 
-**Status:** milestone I (data acquisition, exploration, train/validation/test sets) is in progress.
+## Team
 
-## Repository layout
+**Team name: Levi_es_a_biomechasok**
 
-| Path | Content |
+| Name | Neptun code |
+| --- | --- |
+| Veibli-Magyari Kristóf | UF5793 |
+| Faragó-Pethő Luca | JFSCLX |
+| Pintér Levente | GHHKWS |
+
+## Project
+
+We train a convolutional network on plantar footprint images of the PEDIS podoscope system
+(~44,000 images, 1997–2011). The main task is to recognise the **foot arch type** (flat / normal /
+high) of each foot; its labels are computed from an arch index of the foot outline. Age, body weight
+and shoe size are learned as auxiliary regression targets.
+
+**Status:** milestone I (data source, exploration, train/validation/test sets) is complete.
+
+## Data source
+
+The images and the patient database were exported from the PEDIS podoscope software and provided to
+the team for this course. The raw data holds personal data (names,
+national health insurance numbers, addresses, photos of people), so it is **not public**.
+
+We publish a **de-identified release** instead: the preprocessed foot crops, the train / validation /
+test split files and the targets, with pseudonymous patient ids and exam years only
+(`pedis_feet_release_v1.zip`, built by `src/export_dataset.py`). `src/download_data.py` downloads and
+unpacks it; the download link is shared with the course staff.
+
+## Repository files
+
+| Path | Function |
 | --- | --- |
 | `src/parse_pedis_db.py` | Reads the legacy PEDIS Access database (`PEDI3.MDB`) and extracts one record per image plus the free-text patient notes |
 | `src/make_labels.py` | Builds the image-level label table: age, weight, shoe size and weak condition labels |
-| `src/preprocess.py` | Image cleaning: colour decoding, foot separation, cropping, quality control, patient-level split |
-| `tools/review_app.py` | Browser app for the manual review of the quality-control decisions |
-| `notebooks/01_data_exploration.ipynb` | Exploratory data analysis of the images, the cleaning step and the labels |
-| `data/` | Generated files; not in the repository (see *Data*) |
+| `src/preprocess.py` | Image cleaning: colour decoding, foot separation, straightening, cropping, quality control, patient-level split |
+| `src/export_dataset.py` | Packs the de-identified release (crops, split files, targets) into one zip |
+| `src/download_data.py` | Downloads and unpacks the de-identified release (Google Drive link or any URL) |
+| `src/dataset.py` | Loads the training, validation and test inputs (crops) and outputs (targets) |
+| `notebooks/01_data_exploration.ipynb` | Data exploration and visualisation: images, cleaning, labels, split, training inputs/outputs |
+| `requirements.txt` | Python dependencies |
+| `data/` | Generated and downloaded data; not in the repository |
+
+## How to run
+
+**On Google Colab:** open `notebooks/01_data_exploration.ipynb` with the *Open in Colab* button above,
+paste the dataset link into `DATA_URL` in the first code cell, and run all cells. The sections that
+need the raw files are skipped; their outputs are stored in the notebook.
+
+**Locally, with the de-identified release:**
+
+```bash
+pip install -r requirements.txt
+python src/download_data.py --url "<share link>"
+jupyter notebook notebooks/01_data_exploration.ipynb
+```
+
+**Locally, from the raw data** (team members only): see *Reproducing the data pipeline* below.
 
 ## Environment
 
@@ -28,21 +74,18 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Data
-
-The raw data (the PEDIS image folder and its Access databases) is **not part of this repository**.
-It contains personal data: patient names, national health insurance (TAJ) numbers, addresses,
-and photos of people. Ask the team for access. Put the folder next to the repository root, e.g.
-`PEDIS - talpnyomás adatok/PEDIS/`. Everything under `data/` is generated and is ignored by git.
-
 ## Reproducing the data pipeline
 
-Run the three steps from the repository root (`RAW` = the raw PEDIS folder):
+Team members only: put the raw PEDIS folder next to the repository root, e.g.
+`PEDIS - talpnyomás adatok/PEDIS/`. Everything under `data/` is generated and is ignored by git.
+
+Run the steps from the repository root (`RAW` = the raw PEDIS folder):
 
 ```bash
 python src/parse_pedis_db.py --db "RAW/PEDI3.MDB" --images "RAW" --out-dir data
 python src/make_labels.py --data-dir data
 python src/preprocess.py --raw "RAW" --data-dir data
+python src/export_dataset.py --data-dir data
 ```
 
 | Step | Output | Notes |
@@ -50,35 +93,9 @@ python src/preprocess.py --raw "RAW" --data-dir data
 | `parse_pedis_db.py` | `data/pedis_records.csv`, `data/pedis_ekorlap_notes.csv` | Direct identifiers are dropped; patients get pseudonymous ids. The notes file is free text and must stay local. |
 | `make_labels.py` | `data/labels.csv` | One row per image: age, weight, shoe size, 10 keyword-based condition labels |
 | `preprocess.py` | `data/processed/feet/*.png`, `data/processed/feet.csv`, `data/processed/dropped_images.csv` | Two 96×224 crops per image (each foot straightened, left foot mirrored), QC metrics, foot tilt, `qc_ok` flag, `split` column. Takes ~6 minutes on 8 cores. |
+| `export_dataset.py` | `data/release/`, `data/pedis_feet_release_v1.zip` | De-identified release: exact dates reduced to the year, no free text. Upload the zip and share its link. |
 
 Then open `notebooks/01_data_exploration.ipynb` and run all cells.
-
-### Manual review of the quality control
-
-`data/processed/feet/` holds every crop, including the ones the quality control rejected; `qc_ok` in
-`feet.csv` decides. `tools/review_app.py` is a small browser app (standard library only) to check
-those decisions by hand. It shows a grid of crops with the automatic decision pre-filled
-(green = usable, red = rejected). Click a crop to flip it, Shift+click to mark it unsure, and press
-Enter to save the page. Press O over a crop to open the full original image.
-
-```bash
-python tools/review_app.py --reviewer <name> --queue borderline --shard 1/3
-```
-
-Then open http://localhost:8765.
-
-| Queue | Crops | Purpose |
-| --- | --- | --- |
-| `borderline` | ~4,400 | QC metrics within 3% of a threshold; most mistakes are here |
-| `random` | all, shuffled | a sample of a few hundred measures how accurate the QC is |
-| `rejected` / `passed` | 12,442 / 75,988 | browse one side of the decision |
-
-`--shard i/n` splits a queue between `n` reviewers. Each reviewer writes
-`data/review/review_<name>.csv`. Crops that are already in any file under `data/review/` are skipped,
-so without `--shard` reviewers only avoid duplicates when they share one machine; on separate
-machines use `--shard`, then copy everyone's file into one `data/review/` folder.
-`python tools/review_app.py --summary` merges the files into `data/review/review_merged.csv`
-(majority vote) and prints how often the reviewers agree with the QC.
 
 ### Key preprocessing facts
 
@@ -92,10 +109,6 @@ machines use `--shard`, then copy everyone's file into one `data/review/` folder
 * Quality control removes overexposed, empty and wrongly coloured frames, and failed foot
   localisations. 75,988 of 88,430 foot crops (85.9%) pass.
 * The split is 70/15/15% **by patient**, so no person appears in two subsets.
-
-## Team
-
-<!-- names and roles to be filled in -->
 
 ## License
 

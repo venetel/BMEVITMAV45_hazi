@@ -4,3 +4,4 @@ scipy>=1.13
 pillow>=10.0
 matplotlib>=3.8
 jupyter>=1.0
+gdown>=5.0
